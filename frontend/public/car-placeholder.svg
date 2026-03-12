@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="700" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ECF6FF"/>
+      <stop offset="1" stop-color="#D9F0E9"/>
+    </linearGradient>
+    <linearGradient id="car" x1="200" y1="280" x2="1020" y2="460" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2F4D69"/>
+      <stop offset="1" stop-color="#0C8A84"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="700" fill="url(#bg)"/>
+  <ellipse cx="330" cy="520" rx="95" ry="95" fill="#1B2B3C"/>
+  <ellipse cx="870" cy="520" rx="95" ry="95" fill="#1B2B3C"/>
+  <ellipse cx="330" cy="520" rx="50" ry="50" fill="#A7B8CA"/>
+  <ellipse cx="870" cy="520" rx="50" ry="50" fill="#A7B8CA"/>
+  <path d="M192 470C205 388 260 332 349 312L728 258C790 249 849 270 894 314L1025 444C1035 455 1041 469 1041 484V490H192V470Z" fill="url(#car)"/>
+  <path d="M367 321L720 273C765 267 808 285 842 318L930 401H286L367 321Z" fill="#D0E7FF"/>
+  <text x="70" y="110" fill="#365675" font-family="Arial, sans-serif" font-size="56" font-weight="700">OpenEV Vehicle</text>
+</svg>

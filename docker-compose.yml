@@ -1,0 +1,54 @@
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: evdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d evdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  liquibase:
+    image: liquibase/liquibase:4.31
+    depends_on:
+      db:
+        condition: service_healthy
+    command:
+      - --url=jdbc:postgresql://db:5432/evdb
+      - --username=postgres
+      - --password=postgres
+      - --search-path=/liquibase/changelog
+      - --changelog-file=db.changelog-master.xml
+      - update
+    volumes:
+      - ./liquibase/changelog:/liquibase/changelog:ro
+
+  api:
+    build: .
+    env_file:
+      - .env
+    depends_on:
+      liquibase:
+        condition: service_completed_successfully
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+    depends_on:
+      - api
+    ports:
+      - "5173:5173"
+
+volumes:
+  pgdata:
