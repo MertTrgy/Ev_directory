@@ -9,17 +9,17 @@
     <changeSet id="001_init_01" author="mert">
         <preConditions onFail="MARK_RAN" onError="HALT">
             <not>
-                <tableExists tableName="evdb_vehicle_raw"/>
+                <tableExists tableName="ev_vehicle_raw"/>
             </not>
         </preConditions>
 
         <sql dbms="postgresql">CREATE EXTENSION IF NOT EXISTS pgcrypto;</sql>
 
-        <createTable tableName="evdb_vehicle_raw">
+        <createTable tableName="ev_vehicle_raw">
             <column name="id" type="BIGINT" autoIncrement="true">
-                <constraints primaryKey="true" primaryKeyName="pk_evdb_vehicle_raw" nullable="false"/>
+                <constraints primaryKey="true" primaryKeyName="pk_ev_vehicle_raw" nullable="false"/>
             </column>
-            <column name="source_name" type="VARCHAR(100)" defaultValue="open-ev-data-api">
+            <column name="source_name" type="VARCHAR(100)" defaultValue="open-ev-data-json">
                 <constraints nullable="false"/>
             </column>
             <column name="source_vehicle_id" type="VARCHAR(255)">
@@ -49,24 +49,24 @@
         </createTable>
 
         <addUniqueConstraint
-                tableName="evdb_vehicle_raw"
+                tableName="ev_vehicle_raw"
                 columnNames="source_name, source_vehicle_id, market"
-                constraintName="uq_evdb_vehicle_source_market"/>
+                constraintName="uq_ev_vehicle_source_market"/>
 
-        <createIndex tableName="evdb_vehicle_raw" indexName="ix_evdb_vehicle_raw_vehicle_slug">
+        <createIndex tableName="ev_vehicle_raw" indexName="ix_ev_vehicle_raw_vehicle_slug">
             <column name="vehicle_slug"/>
         </createIndex>
 
-        <createIndex tableName="evdb_vehicle_raw" indexName="ix_evdb_vehicle_raw_vehicle_name">
+        <createIndex tableName="ev_vehicle_raw" indexName="ix_ev_vehicle_raw_vehicle_name">
             <column name="vehicle_name"/>
         </createIndex>
 
-        <createIndex tableName="evdb_vehicle_raw" indexName="ix_evdb_vehicle_raw_market">
+        <createIndex tableName="ev_vehicle_raw" indexName="ix_ev_vehicle_raw_market">
             <column name="market"/>
         </createIndex>
 
         <rollback>
-            <dropTable tableName="evdb_vehicle_raw"/>
+            <dropTable tableName="ev_vehicle_raw"/>
         </rollback>
     </changeSet>
 

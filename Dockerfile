@@ -11,6 +11,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY sql ./sql
 
+# EV data — copy whichever filename exists in the repo root.
+# The scraper config resolves the actual filename at startup.
+COPY open-ev-data.json ./
+
 EXPOSE 8000
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

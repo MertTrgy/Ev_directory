@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -9,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .models import EVDBVehicleRaw
+from .models import EVVehicleRaw as EVDBVehicleRaw
 from .provider import EVDBProvider
 
 logger = logging.getLogger(__name__)
@@ -24,6 +26,9 @@ class SyncStats:
     unchanged: int = 0
     deleted: int = 0
 
+
+
+# ── External API sync ──────────────────────────────────────────────────────────
 
 async def sync_evdb_data(db: Session, remove_missing: bool = False) -> SyncStats:
     provider = EVDBProvider()
@@ -80,7 +85,7 @@ async def sync_evdb_data(db: Session, remove_missing: bool = False) -> SyncStats
 
     if remove_missing:
         if not seen_keys:
-            logger.warning('remove_missing requested but no vehicles were fetched; skipping delete step')
+            logger.warning("remove_missing requested but no vehicles were fetched; skipping delete step")
         else:
             stale_records = db.execute(
                 select(EVDBVehicleRaw).where(EVDBVehicleRaw.source_name == source_name)
@@ -92,61 +97,140 @@ async def sync_evdb_data(db: Session, remove_missing: bool = False) -> SyncStats
                     stats.deleted += 1
 
     db.commit()
-    logger.info('Sync completed: %s', stats)
+    logger.info("Sync completed: %s", stats)
     return stats
 
 
-def list_vehicle_records(db: Session, limit: int = 24, offset: int = 0) -> tuple[list[EVDBVehicleRaw], int, int, int]:
+# ── Generic scraper-to-DB sync ─────────────────────────────────────────────────
+
+async def sync_vehicles_to_db(
+    db: Session,
+    vehicles: list[dict[str, Any]],
+    source_name: str = "open-ev-data-json",
+) -> SyncStats:
+    """Upserts a list of normalized vehicle dicts (from any scraper) into the DB."""
+    stats = SyncStats(fetched=len(vehicles))
+    now = datetime.now(timezone.utc)
+
+    for vehicle in vehicles:
+        unique_code = vehicle.get("uniqueCode") or vehicle.get("unique_code")
+        brand = vehicle.get("brand", "unknown")
+        model = vehicle.get("model", "unknown")
+        year = vehicle.get("year", 0)
+
+        if not unique_code:
+            unique_code = f"{brand}-{model}-{year}".lower().replace(" ", "-")
+
+        source_vehicle_id = str(unique_code)
+        vehicle_name = f"{brand} {model}".strip() or None
+        vehicle_slug = (
+            f"{brand}-{model}".lower().replace(" ", "-") if brand and model else None
+        )
+        raw_url = vehicle.get("primarySourceUrl") or vehicle.get("sourceUrl")
+
+        payload_hash = hashlib.sha256(
+            json.dumps(vehicle, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+        ).hexdigest()
+
+        existing = db.execute(
+            select(EVDBVehicleRaw).where(
+                EVDBVehicleRaw.source_name == source_name,
+                EVDBVehicleRaw.source_vehicle_id == source_vehicle_id,
+                EVDBVehicleRaw.market == "global",
+            )
+        ).scalar_one_or_none()
+
+        if existing is None:
+            db.add(
+                EVDBVehicleRaw(
+                    source_name=source_name,
+                    source_vehicle_id=source_vehicle_id,
+                    vehicle_slug=vehicle_slug,
+                    vehicle_name=vehicle_name,
+                    market="global",
+                    payload_hash=payload_hash,
+                    payload=vehicle,
+                    raw_source_url=raw_url,
+                    first_seen_at=now,
+                    last_seen_at=now,
+                    updated_at=now,
+                )
+            )
+            stats.inserted += 1
+        elif existing.payload_hash != payload_hash:
+            existing.vehicle_slug = vehicle_slug
+            existing.vehicle_name = vehicle_name
+            existing.payload_hash = payload_hash
+            existing.payload = vehicle
+            existing.raw_source_url = raw_url
+            existing.last_seen_at = now
+            existing.updated_at = now
+            stats.updated += 1
+        else:
+            existing.last_seen_at = now
+            stats.unchanged += 1
+
+    db.commit()
+    logger.info("sync_vehicles_to_db(%s) completed: %s", source_name, stats)
+    return stats
+
+
+# ── DB query helpers ───────────────────────────────────────────────────────────
+
+def list_vehicle_records(
+    db: Session, limit: int = 24, offset: int = 0
+) -> tuple[list[EVDBVehicleRaw], int, int, int]:
     safe_limit = max(1, min(limit, MAX_LIST_LIMIT))
     safe_offset = max(0, offset)
-
     total = db.execute(select(func.count()).select_from(EVDBVehicleRaw)).scalar_one()
     records = db.execute(
-        select(EVDBVehicleRaw).order_by(EVDBVehicleRaw.updated_at.desc()).limit(safe_limit).offset(safe_offset)
+        select(EVDBVehicleRaw)
+        .order_by(EVDBVehicleRaw.updated_at.desc())
+        .limit(safe_limit)
+        .offset(safe_offset)
     ).scalars().all()
     return records, total, safe_limit, safe_offset
 
 
 def get_vehicle_record(db: Session, vehicle_id: int) -> EVDBVehicleRaw | None:
-    return db.execute(select(EVDBVehicleRaw).where(EVDBVehicleRaw.id == vehicle_id)).scalar_one_or_none()
+    return db.execute(
+        select(EVDBVehicleRaw).where(EVDBVehicleRaw.id == vehicle_id)
+    ).scalar_one_or_none()
 
 
 def vehicle_summary_dict(record: EVDBVehicleRaw) -> dict[str, Any]:
     return {
-        'id': record.id,
-        'source_name': record.source_name,
-        'source_vehicle_id': record.source_vehicle_id,
-        'vehicle_slug': record.vehicle_slug,
-        'vehicle_name': record.vehicle_name,
-        'market': record.market,
-        'raw_source_url': record.raw_source_url,
-        'image_url': extract_vehicle_image_url(record.payload),
-        'updated_at': record.updated_at,
+        "id": record.id,
+        "source_name": record.source_name,
+        "source_vehicle_id": record.source_vehicle_id,
+        "vehicle_slug": record.vehicle_slug,
+        "vehicle_name": record.vehicle_name,
+        "market": record.market,
+        "raw_source_url": record.raw_source_url,
+        "image_url": extract_vehicle_image_url(record.payload),
+        "updated_at": record.updated_at,
     }
 
 
 def vehicle_detail_dict(record: EVDBVehicleRaw) -> dict[str, Any]:
     payload = dict(record.payload) if isinstance(record.payload, dict) else {}
     data = vehicle_summary_dict(record)
-    data['payload'] = payload
+    data["payload"] = payload
     return data
 
 
 def extract_vehicle_image_url(payload: dict[str, Any] | None) -> str | None:
     if not isinstance(payload, dict):
         return None
-
-    for key in ('image_url', 'image', 'picture', 'photo_url', 'thumbnail_url'):
+    for key in ("imageUrl", "image_url", "image", "picture", "photo_url", "thumbnail_url"):
         candidate = _to_non_empty_str(payload.get(key))
         if candidate:
             return candidate
-
-    for container_key in ('images', 'gallery', 'media'):
+    for container_key in ("images", "gallery", "media"):
         container = payload.get(container_key)
         candidate = _extract_from_container(container)
         if candidate:
             return candidate
-
     return None
 
 
@@ -154,7 +238,7 @@ def _extract_from_container(container: Any) -> str | None:
     if isinstance(container, str):
         return _to_non_empty_str(container)
     if isinstance(container, dict):
-        for key in ('url', 'src', 'image_url', 'large', 'medium', 'small'):
+        for key in ("url", "src", "image_url", "large", "medium", "small"):
             candidate = _to_non_empty_str(container.get(key))
             if candidate:
                 return candidate

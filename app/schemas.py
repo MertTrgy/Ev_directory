@@ -7,6 +7,8 @@ from pydantic import BaseModel
 class HealthResponse(BaseModel):
     status: str
     service: str
+    enriched_images: int = 0
+    enrichment_status: dict[str, Any] = {}
 
 
 class SyncResponse(BaseModel):

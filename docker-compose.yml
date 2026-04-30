@@ -2,16 +2,16 @@ services:
   db:
     image: postgres:17
     environment:
-      POSTGRES_DB: evdb
+      POSTGRES_DB: ev_directory
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d evdb"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ev_directory"]
       interval: 5s
       timeout: 5s
       retries: 20
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
 
@@ -21,7 +21,7 @@ services:
       db:
         condition: service_healthy
     command:
-      - --url=jdbc:postgresql://db:5432/evdb
+      - --url=jdbc:postgresql://db:5432/ev_directory
       - --username=postgres
       - --password=postgres
       - --search-path=/liquibase/changelog
@@ -32,8 +32,9 @@ services:
 
   api:
     build: .
-    env_file:
-      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/ev_directory
+      EV_DATA_DIR: /app
     depends_on:
       liquibase:
         condition: service_completed_successfully
