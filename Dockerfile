@@ -9,9 +9,8 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
-COPY sql ./sql
 
-# EV data lives in data/ locally (gitignored). Mount or copy before building.
+# Copy local data files if they exist (gitignored — place JSON files in data/ before building)
 COPY data/ ./data/
 
 EXPOSE 8000

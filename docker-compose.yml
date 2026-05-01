@@ -1,4 +1,5 @@
 services:
+
   db:
     image: postgres:17
     environment:
@@ -31,25 +32,32 @@ services:
       - ./liquibase/changelog:/liquibase/changelog:ro
 
   api:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     environment:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/ev_directory
       EV_DATA_DIR: /app
+      SECRET_KEY: change-me-in-production
     depends_on:
       liquibase:
         condition: service_completed_successfully
     ports:
       - "8000:8000"
+    restart: on-failure
 
   frontend:
     build:
       context: ./frontend
+      dockerfile: Dockerfile
     environment:
       VITE_API_BASE_URL: http://localhost:8000
     depends_on:
-      - api
+      api:
+        condition: service_started
     ports:
       - "5173:5173"
+    restart: on-failure
 
 volumes:
   pgdata:
