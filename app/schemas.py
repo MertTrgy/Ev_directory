@@ -29,6 +29,12 @@ class VehicleSummaryResponse(BaseModel):
     raw_source_url: str | None
     image_url: str | None
     updated_at: datetime
+    is_favorite: bool = False
+    year: int | None = None
+    brand: str | None = None
+    range_km: int | None = None
+    power_kw: float | None = None
+    battery_kwh: float | None = None
 
 
 class VehicleDetailResponse(VehicleSummaryResponse):
@@ -40,3 +46,31 @@ class VehicleListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+class UserCreate(BaseModel):
+    email: str
+    password: str
+
+
+class UserResponse(BaseModel):
+    id: int
+    email: str
+    role: str
+    created_at: datetime
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse
+
+
+# ── Favorites ─────────────────────────────────────────────────────────────────
+
+class FavoriteResponse(BaseModel):
+    id: int
+    vehicle_id: int
+    created_at: datetime

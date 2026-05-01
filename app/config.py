@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # Override via EV_DATA_DIR env var; defaults to the project root.
     ev_data_dir: str = _PROJECT_ROOT
 
+    # JWT signing secret — override via SECRET_KEY env var in production.
+    secret_key: str = "change-me-in-production-please-use-env-var"
+
     def cors_origins_list(self) -> list[str]:
         origins = [item.strip() for item in self.cors_origins.split(",") if item.strip()]
         return origins or ["*"]

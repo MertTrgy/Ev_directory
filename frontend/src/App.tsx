@@ -1,18 +1,31 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { fetchVehicleDetail, fetchVehicles } from './api';
+import { addFavorite, fetchVehicleDetail, fetchVehicles, removeFavorite } from './api';
+import { AdminPanel } from './components/AdminPanel';
+import { AuthModal } from './components/AuthModal';
+import { ComparisonView } from './components/ComparisonView';
+import { SearchFilter } from './components/SearchFilter';
 import { VehicleCard } from './components/VehicleCard';
 import { VehicleDrawer } from './components/VehicleDrawer';
-import type { VehicleDetail, VehicleSummary } from './types';
+import { useAuth } from './context/AuthContext';
+import { DEFAULT_FILTERS, type SearchFilters, type VehicleDetail, type VehicleSummary } from './types';
 
 const PAGE_SIZE = 12;
 
 export default function App() {
+  const { user, logout } = useAuth();
   const [vehicles, setVehicles] = useState<VehicleSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [loadingList, setLoadingList] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
+
+  const [filters, setFilters] = useState<SearchFilters>(DEFAULT_FILTERS);
+  const filtersRef = useRef(filters);
+  filtersRef.current = filters;
+
+  const [showAuth, setShowAuth] = useState(false);
+  const [showAdmin, setShowAdmin] = useState(false);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [activeSummary, setActiveSummary] = useState<VehicleSummary | null>(null);
@@ -21,28 +34,43 @@ export default function App() {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailsCache, setDetailsCache] = useState<Record<number, VehicleDetail>>({});
 
+  const [compareIds, setCompareIds] = useState<number[]>([]);
+  const [showCompare, setShowCompare] = useState(false);
+
   const hasMore = useMemo(() => vehicles.length < total, [vehicles.length, total]);
 
-  useEffect(() => {
-    void loadVehicles(0, true);
-  }, []);
-
-  async function loadVehicles(nextOffset: number, replace = false) {
+  async function loadVehicles(nextOffset: number, replace = false, overrideFilters?: SearchFilters) {
     setLoadingList(true);
     setListError(null);
+    const activeFilters = overrideFilters ?? filtersRef.current;
     try {
-      const response = await fetchVehicles(PAGE_SIZE, nextOffset);
+      const response = await fetchVehicles(PAGE_SIZE, nextOffset, activeFilters);
       setTotal(response.total);
       setOffset(response.offset + response.items.length);
-      setVehicles((previous) => (replace ? response.items : [...previous, ...response.items]));
-    } catch (error) {
-      setListError(error instanceof Error ? error.message : 'Could not load vehicles');
+      setVehicles((prev) => (replace ? response.items : [...prev, ...response.items]));
+    } catch (err) {
+      setListError(err instanceof Error ? err.message : 'Could not load vehicles');
     } finally {
       setLoadingList(false);
     }
   }
 
-  // We cache details in memory so users can reopen cards instantly.
+  useEffect(() => {
+    void loadVehicles(0, true);
+  }, []);
+
+  function handleFiltersChange(newFilters: SearchFilters) {
+    setFilters(newFilters);
+    setOffset(0);
+    void loadVehicles(0, true, newFilters);
+  }
+
+  function handleFiltersReset() {
+    setFilters(DEFAULT_FILTERS);
+    setOffset(0);
+    void loadVehicles(0, true, DEFAULT_FILTERS);
+  }
+
   async function handleMoreInfo(vehicle: VehicleSummary) {
     setActiveSummary(vehicle);
     setDrawerOpen(true);
@@ -58,9 +86,9 @@ export default function App() {
     try {
       const detail = await fetchVehicleDetail(vehicle.id);
       setActiveDetail(detail);
-      setDetailsCache((previous) => ({ ...previous, [vehicle.id]: detail }));
-    } catch (error) {
-      setDetailError(error instanceof Error ? error.message : 'Could not load vehicle detail');
+      setDetailsCache((prev) => ({ ...prev, [vehicle.id]: detail }));
+    } catch (err) {
+      setDetailError(err instanceof Error ? err.message : 'Could not load vehicle detail');
       setActiveDetail(null);
     } finally {
       setLoadingDetail(false);
@@ -74,26 +102,80 @@ export default function App() {
     setDetailError(null);
   }
 
+  const handleToggleFavorite = useCallback(async (vehicle: VehicleSummary) => {
+    if (!user) { setShowAuth(true); return; }
+    try {
+      if (vehicle.is_favorite) {
+        await removeFavorite(vehicle.id);
+      } else {
+        await addFavorite(vehicle.id);
+      }
+      // Update list
+      setVehicles((prev) => prev.map((v) => v.id === vehicle.id ? { ...v, is_favorite: !v.is_favorite } : v));
+      // Update cache + active detail
+      setDetailsCache((prev) => {
+        const cached = prev[vehicle.id];
+        if (!cached) return prev;
+        return { ...prev, [vehicle.id]: { ...cached, is_favorite: !cached.is_favorite } };
+      });
+      setActiveDetail((prev) => prev?.id === vehicle.id ? { ...prev, is_favorite: !prev.is_favorite } : prev);
+    } catch {
+      // silently ignore — 409 means already favorited
+    }
+  }, [user]);
+
+  function handleToggleCompare(vehicle: VehicleSummary) {
+    setCompareIds((prev) => {
+      if (prev.includes(vehicle.id)) return prev.filter((id) => id !== vehicle.id);
+      if (prev.length >= 4) return prev;
+      return [...prev, vehicle.id];
+    });
+  }
+
   return (
     <div className="page-shell">
       <div className="aurora aurora-left" />
       <div className="aurora aurora-right" />
 
       <main className="content">
-        <header className="hero">
-          <p className="eyebrow">OpenEV Data Explorer</p>
-          <h1>Browse Electric Vehicles</h1>
-          <p>
-            Cards show the quick stats. Use <strong>More info</strong> to open a drawer with all available payload
-            details.
-          </p>
+        {/* Header */}
+        <header className="site-header">
+          <div className="site-header-left">
+            <p className="eyebrow">OpenEV Data Explorer</p>
+            <h1>EV Directory</h1>
+          </div>
+          <div className="site-header-right">
+            {user ? (
+              <>
+                {user.role === 'admin' ? (
+                  <button type="button" className="btn-ghost" onClick={() => setShowAdmin(true)}>Admin</button>
+                ) : null}
+                <span className="user-email">{user.email}</span>
+                <button type="button" className="btn-ghost" onClick={logout}>Sign out</button>
+              </>
+            ) : (
+              <button type="button" className="btn-primary" onClick={() => setShowAuth(true)}>Sign in</button>
+            )}
+          </div>
         </header>
+
+        <SearchFilter filters={filters} onChange={handleFiltersChange} onReset={handleFiltersReset} />
 
         {listError ? <p className="error-text">{listError}</p> : null}
 
+        <p className="result-count">{total} vehicle{total !== 1 ? 's' : ''}</p>
+
         <section className="vehicle-grid">
           {vehicles.map((vehicle) => (
-            <VehicleCard key={vehicle.id} vehicle={vehicle} onMoreInfo={handleMoreInfo} />
+            <VehicleCard
+              key={vehicle.id}
+              vehicle={vehicle}
+              onMoreInfo={handleMoreInfo}
+              onToggleFavorite={handleToggleFavorite}
+              onToggleCompare={handleToggleCompare}
+              isInCompare={compareIds.includes(vehicle.id)}
+              isLoggedIn={!!user}
+            />
           ))}
         </section>
 
@@ -104,10 +186,26 @@ export default function App() {
             disabled={loadingList || !hasMore}
             onClick={() => void loadVehicles(offset)}
           >
-            {loadingList ? 'Loading...' : hasMore ? 'Load more vehicles' : 'No more vehicles'}
+            {loadingList ? 'Loading…' : hasMore ? 'Load more' : 'No more vehicles'}
           </button>
         </div>
       </main>
+
+      {/* Comparison bar */}
+      {compareIds.length >= 1 ? (
+        <div className="compare-bar">
+          <span>{compareIds.length} vehicle{compareIds.length > 1 ? 's' : ''} selected</span>
+          <button
+            type="button"
+            className="btn-primary"
+            disabled={compareIds.length < 2}
+            onClick={() => setShowCompare(true)}
+          >
+            Compare {compareIds.length < 2 ? '(select at least 2)' : ''}
+          </button>
+          <button type="button" className="btn-ghost" onClick={() => setCompareIds([])}>Clear</button>
+        </div>
+      ) : null}
 
       <VehicleDrawer
         open={drawerOpen}
@@ -116,7 +214,13 @@ export default function App() {
         loading={loadingDetail}
         error={detailError}
         onClose={closeDrawer}
+        onToggleFavorite={activeSummary ? () => void handleToggleFavorite(activeSummary) : undefined}
+        isLoggedIn={!!user}
       />
+
+      {showAuth ? <AuthModal onClose={() => setShowAuth(false)} /> : null}
+      {showAdmin ? <AdminPanel onClose={() => setShowAdmin(false)} /> : null}
+      {showCompare ? <ComparisonView ids={compareIds} onClose={() => setShowCompare(false)} /> : null}
     </div>
   );
 }
