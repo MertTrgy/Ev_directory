@@ -11,9 +11,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY sql ./sql
 
-# EV data — copy whichever filename exists in the repo root.
-# The scraper config resolves the actual filename at startup.
-COPY open-ev-data.json ./
+# EV data lives in data/ locally (gitignored). Mount or copy before building.
+COPY data/ ./data/
 
 EXPOSE 8000
 

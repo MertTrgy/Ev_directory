@@ -16,13 +16,20 @@ DATA_DIR = os.environ.get("EV_DATA_DIR") or os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
 
-# Locate the open-ev-data JSON: versioned name first, then generic name,
-# then the pythonScraper subdirectory as last resort.
+# Locate the open-ev-data JSON: data/ subfolder first, then project root fallbacks.
 _CANDIDATES = [
+    os.path.join(DATA_DIR, "data", "open-ev-data-v1.24.0.json"),
+    os.path.join(DATA_DIR, "data", "open-ev-data.json"),
     os.path.join(DATA_DIR, "open-ev-data-v1.24.0.json"),
     os.path.join(DATA_DIR, "open-ev-data.json"),
     os.path.join(DATA_DIR, "pythonScraper", "open-ev-data-v1.24.0.json"),
 ]
 JSON_DATA_FILE = next((p for p in _CANDIDATES if os.path.exists(p)), _CANDIDATES[0])
 
-ENRICHED_FILE = os.path.join(DATA_DIR, "ev-data-enriched.json")
+ENRICHED_FILE = next(
+    (p for p in [
+        os.path.join(DATA_DIR, "data", "ev-data-enriched.json"),
+        os.path.join(DATA_DIR, "ev-data-enriched.json"),
+    ] if os.path.exists(p)),
+    os.path.join(DATA_DIR, "data", "ev-data-enriched.json"),
+)
