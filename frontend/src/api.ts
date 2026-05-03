@@ -1,4 +1,4 @@
-import type { SearchFilters, TokenResponse, VehicleDetail, VehicleListResponse } from './types';
+import type { SearchFilters, StatsResponse, TokenResponse, VehicleDetail, VehicleListResponse } from './types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 
@@ -19,6 +19,12 @@ async function requestJson<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error((body as { detail?: string }).detail ?? `Request failed (${response.status})`);
   }
   return (await response.json()) as T;
+}
+
+// ── Stats ─────────────────────────────────────────────────────────────────────
+
+export async function fetchStats(): Promise<StatsResponse> {
+  return requestJson<StatsResponse>('/vehicles/stats');
 }
 
 // ── Vehicles ──────────────────────────────────────────────────────────────────

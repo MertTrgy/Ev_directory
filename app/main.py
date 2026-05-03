@@ -1,23 +1,26 @@
-"""FastAPI backend — EV Directory Phase 2."""
+"""FastAPI backend — EV Directory Phase 3."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import threading
+from contextlib import asynccontextmanager
 from typing import Any, Dict, List
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy import Float, Integer, cast, func, select
 from sqlalchemy.orm import Session
 
 from .auth import create_access_token, decode_token, hash_password, verify_password
 from .config import settings
 from .db import SessionLocal
 from .logging_config import configure_logging
-from .models import User
+from .models import EVVehicleRaw, User
 from .schemas import (
     FavoriteResponse,
     HealthResponse,
@@ -54,8 +57,52 @@ from .ev_scraper.wikipedia_scraper import scrape_vehicles
 from .ev_scraper.clearwatt_scraper import fetch_vehicle_urls, scrape_all_vehicles
 
 configure_logging()
+logger = logging.getLogger(__name__)
 
-app = FastAPI(title="EV Directory API", version="4.0.0")
+_CLEARWATT_CACHE_FILE = os.path.join(settings.ev_data_dir, "data", "clearwatt_cache.json")
+_clearwatt_progress: Dict[str, Any] = {"running": False, "total": 0, "done": 0, "errors": 0}
+_clearwatt_results: List[Dict[str, Any]] = []
+
+
+# ── Auto-seed on startup ───────────────────────────────────────────────────────
+
+async def _auto_seed() -> None:
+    """If the vehicles table is empty and the data file exists, seed automatically."""
+    db = SessionLocal()
+    try:
+        count = db.execute(select(func.count()).select_from(EVVehicleRaw)).scalar_one()
+        if count > 0:
+            logger.info("Auto-seed skipped — %d vehicles already in DB", count)
+            return
+        if not os.path.exists(JSON_DATA_FILE):
+            logger.warning("Auto-seed skipped — data file not found: %s", JSON_DATA_FILE)
+            return
+        logger.info("Auto-seeding vehicles from %s …", JSON_DATA_FILE)
+        raw = load_vehicle_dataset()
+        image_map = load_enriched().get("image_map", {})
+        normalized = [normalize_vehicle(v, image_map) for v in raw.get("vehicles", [])]
+        stats = await sync_vehicles_to_db(db, normalized, source_name="open-ev-data-json")
+        logger.info("Auto-seed complete: %s", stats)
+    except Exception as exc:
+        logger.error("Auto-seed failed: %s", exc)
+    finally:
+        db.close()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    def _load_cache() -> None:
+        global _clearwatt_results
+        _clearwatt_results = _load_clearwatt_cache()
+
+    _load_cache()
+    await _auto_seed()
+    yield
+
+
+# ── App setup ──────────────────────────────────────────────────────────────────
+
+app = FastAPI(title="EV Directory API", version="3.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list(),
@@ -63,10 +110,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-_CLEARWATT_CACHE_FILE = os.path.join(settings.ev_data_dir, "data", "clearwatt_cache.json")
-_clearwatt_progress: Dict[str, Any] = {"running": False, "total": 0, "done": 0, "errors": 0}
-_clearwatt_results: List[Dict[str, Any]] = []
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
@@ -92,14 +135,10 @@ def _load_clearwatt_cache() -> List[Dict[str, Any]]:
     try:
         if os.path.exists(_CLEARWATT_CACHE_FILE):
             with open(_CLEARWATT_CACHE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data.get("items", [])
+                return json.load(f).get("items", [])
     except Exception:
         pass
     return []
-
-
-_clearwatt_results = _load_clearwatt_cache()
 
 
 # ── Auth dependencies ──────────────────────────────────────────────────────────
@@ -143,6 +182,38 @@ def health() -> HealthResponse:
         enriched_images=len(image_map),
         enrichment_status=state.enrichment_progress,
     )
+
+
+# ── Stats ──────────────────────────────────────────────────────────────────────
+
+@app.get("/vehicles/stats")
+def vehicle_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """Quick summary counts for the dashboard."""
+    total = db.execute(select(func.count()).select_from(EVVehicleRaw)).scalar_one()
+    brand_count = db.execute(
+        select(func.count(func.distinct(EVVehicleRaw.payload["brand"].astext)))
+        .select_from(EVVehicleRaw)
+    ).scalar_one()
+    market_count = db.execute(
+        select(func.count(func.distinct(EVVehicleRaw.market)))
+        .select_from(EVVehicleRaw)
+    ).scalar_one()
+    avg_range = db.execute(
+        select(func.avg(cast(EVVehicleRaw.payload["rangeKm"].astext, Float)))
+        .select_from(EVVehicleRaw)
+        .where(EVVehicleRaw.payload["rangeKm"].astext.isnot(None))
+    ).scalar_one()
+    max_range = db.execute(
+        select(func.max(cast(EVVehicleRaw.payload["rangeKm"].astext, Float)))
+        .select_from(EVVehicleRaw)
+    ).scalar_one()
+    return {
+        "total_vehicles": total,
+        "total_brands": brand_count,
+        "total_markets": market_count,
+        "avg_range_km": round(float(avg_range), 0) if avg_range else None,
+        "max_range_km": int(max_range) if max_range else None,
+    }
 
 
 # ── Auth endpoints ─────────────────────────────────────────────────────────────
@@ -189,12 +260,7 @@ def list_favorites(
     db: Session = Depends(get_db),
 ) -> VehicleListResponse:
     records = get_user_favorites(db, current_user.id)
-    fav_ids = {r.id for r in records}
-    items = []
-    for record in records:
-        d = vehicle_summary_dict(record)
-        d["is_favorite"] = record.id in fav_ids
-        items.append(VehicleSummaryResponse(**d))
+    items = [VehicleSummaryResponse(**{**vehicle_summary_dict(r), "is_favorite": True}) for r in records]
     return VehicleListResponse(items=items, total=len(items), limit=len(items), offset=0)
 
 
@@ -224,7 +290,7 @@ def remove_from_favorites(
     return {"removed": True}
 
 
-# ── JSON catalog (open-ev-data file) ──────────────────────────────────────────
+# ── JSON catalog ───────────────────────────────────────────────────────────────
 
 @app.get("/vehicles/json")
 def get_vehicles_from_json() -> Dict[str, Any]:
@@ -234,7 +300,6 @@ def get_vehicles_from_json() -> Dict[str, Any]:
         raw = load_vehicle_dataset()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to read data file: {exc}") from exc
-
     image_map = load_enriched().get("image_map", {})
     items = [normalize_vehicle(v, image_map) for v in raw.get("vehicles", [])]
     return {"source": "open-ev-data", "count": len(items), "generatedAt": raw.get("generated_at"), "items": items}
@@ -248,14 +313,13 @@ async def sync_json_to_db(db: Session = Depends(get_db)) -> SyncResponse:
         raw = load_vehicle_dataset()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to read data file: {exc}") from exc
-
     image_map = load_enriched().get("image_map", {})
     normalized = [normalize_vehicle(v, image_map) for v in raw.get("vehicles", [])]
     stats = await sync_vehicles_to_db(db, normalized, source_name="open-ev-data-json")
     return SyncResponse(fetched=stats.fetched, inserted=stats.inserted, updated=stats.updated, unchanged=stats.unchanged, deleted=stats.deleted)
 
 
-# ── Comparison endpoint ────────────────────────────────────────────────────────
+# ── Comparison ─────────────────────────────────────────────────────────────────
 
 @app.get("/vehicles/compare")
 def compare_vehicles(
@@ -331,7 +395,7 @@ def clear_scrape_cache() -> Dict[str, Any]:
     return {"cleared": cleared}
 
 
-# ── Clearwatt scraper ──────────────────────────────────────────────────────────
+# ── Clearwatt ──────────────────────────────────────────────────────────────────
 
 @app.get("/vehicles/clearwatt/sitemap-count")
 def clearwatt_sitemap_count() -> Dict[str, Any]:
@@ -387,12 +451,12 @@ def stop_clearwatt_scrape() -> Dict[str, Any]:
 @app.post("/vehicles/clearwatt/sync-to-db", response_model=SyncResponse)
 async def sync_clearwatt_to_db(db: Session = Depends(get_db)) -> SyncResponse:
     if not _clearwatt_results:
-        raise HTTPException(status_code=404, detail="No Clearwatt data cached. Run POST /vehicles/clearwatt/start first.")
+        raise HTTPException(status_code=404, detail="No Clearwatt data cached.")
     stats = await sync_vehicles_to_db(db, _clearwatt_results, source_name="clearwatt")
     return SyncResponse(fetched=stats.fetched, inserted=stats.inserted, updated=stats.updated, unchanged=stats.unchanged, deleted=stats.deleted)
 
 
-# ── Image search utility ───────────────────────────────────────────────────────
+# ── Image search ───────────────────────────────────────────────────────────────
 
 @app.get("/vehicles/image-search")
 def image_search(brand: str, model: str) -> Dict[str, Any]:
@@ -401,7 +465,7 @@ def image_search(brand: str, model: str) -> Dict[str, Any]:
     return {"brand": brand, "model": model, "imageUrl": url, "found": url is not None}
 
 
-# ── DB-backed vehicle endpoints ────────────────────────────────────────────────
+# ── DB-backed vehicle list/detail ──────────────────────────────────────────────
 
 @app.get("/vehicles", response_model=VehicleListResponse)
 def list_vehicles(
@@ -430,11 +494,10 @@ def list_vehicles(
         sort_by=sort_by, order=order,
     )
     fav_ids = get_user_favorite_ids(db, current_user.id) if current_user else set()
-    items = []
-    for record in records:
-        d = vehicle_summary_dict(record)
-        d["is_favorite"] = record.id in fav_ids
-        items.append(VehicleSummaryResponse(**d))
+    items = [
+        VehicleSummaryResponse(**{**vehicle_summary_dict(r), "is_favorite": r.id in fav_ids})
+        for r in records
+    ]
     return VehicleListResponse(items=items, total=total, limit=safe_limit, offset=safe_offset)
 
 
@@ -448,12 +511,10 @@ def vehicle_detail(
     if record is None:
         raise HTTPException(status_code=404, detail=f"Vehicle with id={vehicle_id} not found")
     fav_ids = get_user_favorite_ids(db, current_user.id) if current_user else set()
-    d = vehicle_detail_dict(record)
-    d["is_favorite"] = record.id in fav_ids
-    return VehicleDetailResponse(**d)
+    return VehicleDetailResponse(**{**vehicle_detail_dict(record), "is_favorite": record.id in fav_ids})
 
 
-# ── External-API sync ──────────────────────────────────────────────────────────
+# ── Legacy external API sync ───────────────────────────────────────────────────
 
 @app.post("/sync", response_model=SyncResponse)
 async def sync_from_api(

@@ -54,6 +54,14 @@ export type SearchFilters = {
   order: string;
 };
 
+export type StatsResponse = {
+  total_vehicles: number;
+  total_brands: number;
+  total_markets: number;
+  avg_range_km: number | null;
+  max_range_km: number | null;
+};
+
 export const DEFAULT_FILTERS: SearchFilters = {
   search: '',
   brand: '',
